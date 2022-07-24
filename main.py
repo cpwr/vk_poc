@@ -1,37 +1,124 @@
 import os
+from datetime import datetime, timezone
+from dataclasses import dataclass
 
 import vk
-
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
+@dataclass
+class Post:
+    id: int
+    owner_id: int
+    from_id: int
+    date: int
+    edited: int
+    post_type: str
+    text: str
+    comments_count: int
+    likes_count: int
+    reposts_count: int
+    views_count: int
+
+    @property
+    def date_created(self):
+        return datetime.fromtimestamp(self.date, tz=timezone.utc)
+
+    @property
+    def date_edited(self):
+        return datetime.fromtimestamp(self.edited, tz=timezone.utc)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'owner_id': self.owner_id,
+            'from_id': self.from_id,
+            'date_created': self.date_created,
+            'date_edited': self.date_edited,
+            'post_type': self.post_type,
+            'text': self.text,
+            'comments_count': self.comments_count,
+            'likes_count': self.likes_count,
+            'reposts_count': self.reposts_count,
+            'views_count': self.views_count,
+        }
+
+
 class VKClient:
 
-    def __init__(self, client: vk.API):
-        self.client = client
+    def __init__(self, api: vk.API, lang="ru"):
+        self.client = api
+        self.lang = lang  # "ru" | "uk" | "be" | "en" | "es" | "fi" | "de" | "it"
 
-    def get_user_by_id(self, user_id: int) -> dict:
-        return self.client.users.get(user_id=user_id)
+    def get_user_by_id(self, user_id: int | str, fields: list[str] | None = None) -> dict:
+        if fields:
+            fields = ",".join(fields)
+        return self.client.users.get(user_ids=user_id, fields=fields, lang=self.lang)[0]
 
-    def get_users_by_id(self, user_ids: list[int]) -> list[dict]:
-        return self.client.users.get(user_ids=user_ids)
+    def get_users_by_id(self, user_ids: list[int], fields: list[str] | None = None) -> list[dict]:
+        if fields:
+            fields = ",".join(fields)
+        return self.client.users.get(user_ids=user_ids, fields=fields, lang=self.lang)
 
-    def get_group_by_id(self, group_id: str | int) -> dict:
-        return self.client.groups.getById(group_id=group_id)[0]
+    def get_group_by_id(
+        self,
+        group_id: str | int,
+        extended: int = 1,
+        fields: list[str] | None = None,
+    ) -> dict:
+        if fields:
+            fields = ",".join(fields)
+        return self.client.groups.getById(
+            group_id=group_id,
+            extended=extended,
+            fields=fields,
+            count=1,
+            lang=self.lang,
+        )[0]
 
-    def get_groups_by_id(self, group_ids: list[str | int]) -> list[dict]:
-        return self.client.groups.getById(group_ids=group_ids)
+    def get_groups_by_id(
+        self,
+        group_ids: list[str | int],
+        extended: int = 1,
+        fields: list[str] | None = None,
+        count: int | None = None,
+    ) -> list[dict]:
+        if fields:
+            fields = ",".join(fields)
+        if count is None:
+            count = len(group_ids)
+        return self.client.groups.getById(
+            group_ids=group_ids,
+            extended=extended,
+            fields=fields,
+            count=count,
+            lang=self.lang,
+        )
 
-    def get_group_members(self, group_id: str | int) -> dict:
-        return self.client.groups.getMembers(group_id=group_id)
+    def get_group_members(
+        self,
+        group_id: str | int,
+        fields: list[str] | None = None,
+        offset: int = 0,
+        count: int = 1000,
+    ) -> dict:
+        if fields:
+            fields = ",".join(fields)
+        return self.client.groups.getMembers(
+            group_id=group_id,
+            offset=offset,
+            count=count,
+            fields=fields,
+            lang=self.lang,
+        )
 
     def get_user_subs(self, user_id: int):
-        return self.client.users.getSubscriptions(user_id=user_id)
+        return self.client.users.getSubscriptions(user_id=user_id, lang=self.lang)
 
     def get_group_topics(self, group_id: int):
-        return self.client.board.getTopics(group_id=group_id)
+        return self.client.board.getTopics(group_id=group_id, lang=self.lang)
 
     def get_group_topic_comments(
         self,
@@ -53,13 +140,14 @@ class VKClient:
             count=count,
             extended=extended,
             sort=sort,
+            lang=self.lang,
         )
 
-    def get_obj_posts(
+    def get_posts(
         self,
-        owner_id: int,  # user_id | group_id [should be prefixed with -]
-        domain: str,
-        offset: int,
+        owner_id: int | None = None,  # user_id | group_id [should be prefixed with -]
+        domain: str | None = None,
+        offset: int | None = None,
         count: int = 100,
         filters: str | None = None,  # all | others | owner
         extended: int = 1,  # will return profiles and groups
@@ -73,6 +161,7 @@ class VKClient:
             filter=filters,
             extended=extended,
             fields=fields,
+            lang=self.lang,
         )
 
     def get_post_comments(
@@ -103,6 +192,7 @@ class VKClient:
             fields=fields,
             comment_id=comment_id,
             thread_items_count=thread_items_count,
+            lang=self.lang,
         )
 
     def get_obj_likes_ids(
@@ -125,27 +215,49 @@ class VKClient:
             offset=offset,
             count=count,
             skip_own=1,
+            lang=self.lang,
         )
 
 
-def save_data(data, filename="data.txt"):
+def write_data(data, filename="data.txt"):
     pass
 
 
-def enter_data(filename="data.txt"):
+def read_data(filename="data.txt"):
     pass
 
 
 if __name__ == "__main__":
     token = os.getenv("service_key")
     vk_api = vk.API(access_token=token, v='5.131')
-    client = VKClient(client=vk_api)
+    client = VKClient(api=vk_api)
 
-    print(client.get_user_by_id(user_id=1))  # get user
-    group_id = client.get_group_by_id(group_id="1")["id"]  # get group info
+    # print(client.get_users_by_id(user_ids=[1, 46976392]))  # get user
+    group_id = client.get_group_by_id(group_id="bogodukhovs")["id"]  # get group info
     # print(group_id, "group_id")
-    followers = client.get_group_members(group_id)  # get group members
+    followers = client.get_group_members(
+        group_id,
+        fields=["bdate", "city"]
+    )  # get group members
     # print(followers, "followers")
     # print(client.get_users_by_id(user_ids=followers["items"]))
-    subs = client.get_user_subs(user_id=1)
-    print(subs, "subs")
+    # subs = client.get_user_subs(user_id=-29534144)
+    # print(subs, "subs")
+    posts = client.get_posts(domain="bogodukhovs", count=1)
+    posts_data = [
+        Post(
+            id=post["id"],
+            owner_id=post["owner_id"],
+            from_id=post["from_id"],
+            date=post["date"],
+            edited=post["edited"],
+            post_type=post["post_type"],
+            text=post["text"],
+            comments_count=post.get("comments", {}).get("count", 0),
+            likes_count=post.get("likes", {}).get("count", 0),
+            reposts_count=post.get("reposts", {}).get("count", 0),
+            views_count=post.get("views", {}).get("count", 0),
+        ) for post in posts["items"]
+    ]
+    print(posts_data[0].to_dict())
+
