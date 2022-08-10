@@ -1,9 +1,16 @@
+import json
 import os
+
 from datetime import datetime, timezone
 from dataclasses import dataclass
+from time import sleep
+from typing import Iterable
 
+import requests
 import vk
+
 from dotenv import load_dotenv
+from yarl import URL
 
 load_dotenv()
 
@@ -13,8 +20,8 @@ class Post:
     id: int
     owner_id: int
     from_id: int
-    date: int
-    edited: int
+    date: int | None
+    edited: int | None
     post_type: str
     text: str
     comments_count: int
@@ -24,11 +31,13 @@ class Post:
 
     @property
     def date_created(self):
-        return datetime.fromtimestamp(self.date, tz=timezone.utc)
+        if self.date:
+            return datetime.fromtimestamp(self.date, tz=timezone.utc)
 
     @property
     def date_edited(self):
-        return datetime.fromtimestamp(self.edited, tz=timezone.utc)
+        if self.edited:
+            return datetime.fromtimestamp(self.edited, tz=timezone.utc)
 
     def to_dict(self):
         return {
@@ -218,6 +227,123 @@ class VKClient:
             lang=self.lang,
         )
 
+    def iter_search(
+        self,
+        query: str,
+        extended: int = 1,  # will return like user and group info
+        offset: int | None = None,
+        count: int = 200,
+        start_id: int | None = None,
+        start_from: int | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        fields: list | None = None,
+    ) -> Iterable:
+        batch = self.newsfeed_search(
+            query=query,
+            extended=extended,
+            offset=offset,
+            count=count,
+            start_id=start_id,
+            start_from=start_from,
+            start_time=start_time,
+            end_time=end_time,
+            fields=fields,
+        )
+        if batch:
+            yield batch
+            sleep(0.5)
+
+        while next_from := batch.get("next_from"):
+            batch = self.newsfeed_search(
+                query=query,
+                extended=extended,
+                offset=offset,
+                count=count,
+                start_id=start_id,
+                start_from=next_from,
+                start_time=start_time,
+                end_time=end_time,
+                fields=fields,
+            )
+            if batch:
+                yield batch
+                sleep(0.5)
+
+    def newsfeed_search(
+        self,
+        query: str,
+        extended: int = 1,  # will return like user and group info
+        offset: int | None = None,
+        count: int = 200,
+        start_id: int | None = None,
+        start_from: int | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        fields: list | None = None,
+    ):
+        batch = self.client.newsfeed.search(
+            q=query,
+            extended=extended,
+            offset=offset,
+            count=count,
+            start_id=start_id,
+            start_from=start_from,
+            start_time=start_time,
+            end_time=end_time,
+            fields=fields,
+            lang=self.lang,
+        )
+        posts = batch.get("items", [])
+        if posts:
+            return batch
+
+        return {}
+
+
+def extract_media(attachments: list) -> tuple[list, list, list, list, list]:
+    videos = []
+    photos = []
+    audios = []
+    links = []
+    docs = []
+
+    if not attachments:
+        return videos, photos, audios, links, docs
+
+    for attachment in attachments:
+        match attachment.get("type"):
+            case "photo":
+                photos.extend([x["url"] for x in attachment["photo"]["sizes"]])
+            case "video":
+                attachment = attachment.get("video")
+                owner_id = attachment.get("owner_id")
+                attachment_id = attachment.get("id")
+                access_key = attachment.get("access_key")
+                if access_key:
+                    video_id = f"{owner_id}_{attachment_id}_{access_key}"
+                else:
+                    video_id = f"{owner_id}_{attachment_id}"
+                video_url = f"https://vk.com/video?z=video{video_id}"
+                videos.append(video_url)
+            case "audio":
+                attachment = attachment.get("audio")
+                if audio_url := attachment.get("url"):
+                    audios.append(audio_url)
+            case "link":
+                links.append(attachment["link"]["url"])
+            case "doc":
+                if doc := attachment["doc"]:
+                    if doc.get("ext") in ["jpg", "jpeg"]:
+                        photos.extend([x["src"] for x in doc.get("preview", {}).get("photo", {}).get("sizes", [])])
+                    docs.append(doc["url"])
+            case _:
+                print("!!!!!")
+                print(attachment)
+                print("!!!!!")
+
+    return videos, photos, audios, links, docs
+
 
 def write_data(data, filename="data.txt"):
     pass
@@ -227,37 +353,81 @@ def read_data(filename="data.txt"):
     pass
 
 
+def get_post_link(owner_id: str | int, post_id: str | int) -> str:
+    match owner_id:
+        case int():
+            owner_id = abs(owner_id)
+        case str():
+            owner_id = owner_id
+
+    try:
+        group = client.get_group_by_id(group_id=owner_id)
+    except Exception as err:
+        print(err)
+        return ""
+
+    return f"https://vk.com/{group['screen_name']}?w=wall-{group['id']}_{post_id}"
+
+
 if __name__ == "__main__":
     token = os.getenv("service_key")
     vk_api = vk.API(access_token=token, v='5.131')
     client = VKClient(api=vk_api)
 
+    res = client.iter_search(query="POLARNET", count=20)
+    for batch in res:
+        posts = batch.get("items", [])
+        groups = batch.get("groups", [])
+        profiles = batch.get("profiles", [])
+        for post in posts:
+            channel_id = post["owner_id"]
+            post_id = post["id"]
+            link = get_post_link(channel_id, post_id)
+            videos, photos, *_ = extract_media(post.get("attachments", []))
+            print({
+                "id": post["id"],
+                "text": post["text"],
+                "link": link,
+                "peer_channel_id": post["owner_id"],
+                "channel_id": post["owner_id"],
+                "published_at": post.get("date"),
+                "updated_at": post.get("updated_at"),
+                "images": photos,
+                "videos": videos,
+                "views": post.get("views", {}).get("count", 0),
+                "forwards": post.get("reposts", {}).get("count", 0),
+                "replies": post.get("comments", {}).get("count", 0),
+                "likes": post.get("likes", {}).get("count", 0),
+            })
+        break
+
     # print(client.get_users_by_id(user_ids=[1, 46976392]))  # get user
-    group_id = client.get_group_by_id(group_id="bogodukhovs")["id"]  # get group info
+    # group_id = client.get_group_by_id(group_id="public128394762")["id"]  # get group info
     # print(group_id, "group_id")
-    followers = client.get_group_members(
-        group_id,
-        fields=["bdate", "city"]
-    )  # get group members
+    # print("----------------------")
+    # followers = client.get_group_members(
+    #     group_id,
+    #     fields=["bdate", "city"]
+    # )  # get group members
     # print(followers, "followers")
     # print(client.get_users_by_id(user_ids=followers["items"]))
     # subs = client.get_user_subs(user_id=-29534144)
     # print(subs, "subs")
-    posts = client.get_posts(domain="bogodukhovs", count=1)
-    posts_data = [
-        Post(
-            id=post["id"],
-            owner_id=post["owner_id"],
-            from_id=post["from_id"],
-            date=post["date"],
-            edited=post["edited"],
-            post_type=post["post_type"],
-            text=post["text"],
-            comments_count=post.get("comments", {}).get("count", 0),
-            likes_count=post.get("likes", {}).get("count", 0),
-            reposts_count=post.get("reposts", {}).get("count", 0),
-            views_count=post.get("views", {}).get("count", 0),
-        ) for post in posts["items"]
-    ]
-    print(posts_data[0].to_dict())
+    # posts = client.get_posts(owner_id=-group_id, count=1)
+    # posts_data = [
+    #     Post(
+    #         id=post["id"],
+    #         owner_id=post["owner_id"],
+    #         from_id=post["from_id"],
+    #         date=post["date"],
+    #         edited=post.get("edited"),
+    #         post_type=post["post_type"],
+    #         text=post["text"],
+    #         comments_count=post.get("comments", {}).get("count", 0),
+    #         likes_count=post.get("likes", {}).get("count", 0),
+    #         reposts_count=post.get("reposts", {}).get("count", 0),
+    #         views_count=post.get("views", {}).get("count", 0),
+    #     ) for post in posts["items"]
+    # ]
+    # print(posts_data[0].to_dict())
 
