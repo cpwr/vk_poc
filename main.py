@@ -1,4 +1,3 @@
-import json
 import os
 
 from datetime import datetime, timezone
@@ -6,11 +5,9 @@ from dataclasses import dataclass
 from time import sleep
 from typing import Iterable
 
-import requests
 import vk
 
 from dotenv import load_dotenv
-from yarl import URL
 
 load_dotenv()
 
@@ -307,9 +304,6 @@ def extract_media(attachments: list) -> tuple[list, list, list, list, list]:
     audios = []
     links = []
     docs = []
-
-    if not attachments:
-        return videos, photos, audios, links, docs
 
     for attachment in attachments:
         match attachment.get("type"):
